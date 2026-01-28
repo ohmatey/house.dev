@@ -127,11 +127,18 @@ fn is_dangerous_path(path: &Path) -> bool {
     false
 }
 
-fn calculate_folder_size(path: &Path) -> (u64, u64) {
+/// Calculate folder size with cancellation support
+/// Returns Ok((size, file_count)) or Err(()) if cancelled
+fn calculate_folder_size(path: &Path) -> Result<(u64, u64), ()> {
     let mut total_size: u64 = 0;
     let mut file_count: u64 = 0;
 
     for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
+        // Check cancellation every 500 files
+        if file_count % 500 == 0 && SCAN_CANCELLED.load(Ordering::SeqCst) {
+            return Err(());
+        }
+
         if entry.file_type().is_file() {
             if let Ok(metadata) = entry.metadata() {
                 total_size += metadata.len();
@@ -140,7 +147,7 @@ fn calculate_folder_size(path: &Path) -> (u64, u64) {
         }
     }
 
-    (total_size, file_count)
+    Ok((total_size, file_count))
 }
 
 fn find_heavy_folders(base_path: &Path) -> Result<Vec<FolderInfo>, String> {
@@ -172,7 +179,11 @@ fn find_heavy_folders(base_path: &Path) -> Result<Vec<FolderInfo>, String> {
         let folder_name = entry.file_name().to_string_lossy().to_string();
 
         if HEAVY_FOLDERS.contains(&folder_name.as_str()) {
-            let (size, file_count) = calculate_folder_size(entry.path());
+            // Calculate size with cancellation support
+            let (size, file_count) = match calculate_folder_size(entry.path()) {
+                Ok(result) => result,
+                Err(()) => return Err("Scan cancelled".to_string()),
+            };
 
             // Only include folders > 1MB
             if size > 1_000_000 {
@@ -235,59 +246,66 @@ fn validate_path(path: String) -> PathValidation {
 }
 
 #[tauri::command]
-fn check_folder_complexity(path: String) -> Result<ComplexityCheck, String> {
-    let path = Path::new(&path);
+async fn check_folder_complexity(path: String) -> Result<ComplexityCheck, String> {
+    let path_buf = std::path::PathBuf::from(&path);
 
-    if !path.exists() {
+    if !path_buf.exists() {
         return Err("Path does not exist".to_string());
     }
 
-    // Quick shallow scan to estimate complexity
-    // Max depth of 4, sample up to 5000 directories
-    let max_sample = 5000u64;
-    let mut dir_count = 0u64;
+    // Move the blocking scan to a background thread
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        // Quick shallow scan to estimate complexity
+        // Max depth of 4, sample up to 5000 directories
+        let max_sample = 5000u64;
+        let mut dir_count = 0u64;
 
-    for _ in WalkDir::new(path)
-        .max_depth(4)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_dir())
-    {
-        dir_count += 1;
-        if dir_count >= max_sample {
-            break;
+        for _ in WalkDir::new(&path_buf)
+            .max_depth(4)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_dir())
+        {
+            dir_count += 1;
+            if dir_count >= max_sample {
+                break;
+            }
         }
-    }
 
-    // Estimate total based on sample
-    let estimated = if dir_count >= max_sample {
-        // If we hit the sample limit, extrapolate (this is a rough estimate)
-        dir_count * 10
-    } else {
-        dir_count
-    };
+        // Estimate total based on sample
+        let estimated = if dir_count >= max_sample {
+            // If we hit the sample limit, extrapolate (this is a rough estimate)
+            dir_count * 10
+        } else {
+            dir_count
+        };
 
-    // Thresholds for warnings and blocking
-    let is_blocked = estimated > 100_000;
-    let is_large = estimated > 10_000;
+        // Thresholds for warnings and blocking
+        let is_blocked = estimated > 100_000;
+        let is_large = estimated > 10_000;
 
-    let recommendation = if is_blocked {
-        "This folder is too large to scan safely. Please select a more specific subfolder."
-            .to_string()
-    } else if estimated > 50_000 {
-        "This folder appears to be very large and may take several minutes to scan. Consider selecting a more specific subfolder.".to_string()
-    } else if is_large {
-        "This folder is fairly large. The scan may take a minute or more.".to_string()
-    } else {
-        "Folder size looks reasonable for scanning.".to_string()
-    };
+        let recommendation = if is_blocked {
+            "This folder is too large to scan safely. Please select a more specific subfolder."
+                .to_string()
+        } else if estimated > 50_000 {
+            "This folder appears to be very large and may take several minutes to scan. Consider selecting a more specific subfolder.".to_string()
+        } else if is_large {
+            "This folder is fairly large. The scan may take a minute or more.".to_string()
+        } else {
+            "Folder size looks reasonable for scanning.".to_string()
+        };
 
-    Ok(ComplexityCheck {
-        estimated_directories: estimated,
-        is_large,
-        is_blocked,
-        recommendation,
+        ComplexityCheck {
+            estimated_directories: estimated,
+            is_large,
+            is_blocked,
+            recommendation,
+        }
     })
+    .await
+    .map_err(|e| format!("Complexity check failed: {}", e))?;
+
+    Ok(result)
 }
 
 #[tauri::command]
@@ -296,31 +314,38 @@ fn cancel_scan() {
 }
 
 #[tauri::command]
-fn scan_folders(path: String) -> Result<ScanResult, String> {
-    let path = Path::new(&path);
+async fn scan_folders(path: String) -> Result<ScanResult, String> {
+    let path_buf = std::path::PathBuf::from(&path);
 
-    if !path.exists() {
+    // Validation stays synchronous (fast)
+    if !path_buf.exists() {
         return Err("Path does not exist".to_string());
     }
 
-    if !path.is_dir() {
+    if !path_buf.is_dir() {
         return Err("Path is not a directory".to_string());
     }
 
     // Additional safety check - should have been caught by validate_path but double-check
-    if is_dangerous_path(path) {
+    if is_dangerous_path(&path_buf) {
         return Err(
             "Cannot scan system-level folders. Please select a more specific folder.".to_string(),
         );
     }
 
-    let folders = find_heavy_folders(path)?;
+    let scan_path = path_buf.to_string_lossy().to_string();
+
+    // Move heavy work to blocking thread pool
+    let folders = tauri::async_runtime::spawn_blocking(move || find_heavy_folders(&path_buf))
+        .await
+        .map_err(|e| format!("Scan task failed: {}", e))??;
+
     let total_size: u64 = folders.iter().map(|f| f.size).sum();
 
     Ok(ScanResult {
         folders,
         total_size,
-        scan_path: path.to_string_lossy().to_string(),
+        scan_path,
     })
 }
 
@@ -447,9 +472,18 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
                 api.prevent_exit();
+            }
+
+            // Handle macOS dock icon click
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
         });
 }

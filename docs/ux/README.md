@@ -1,6 +1,6 @@
 # UX Documentation - house.dev
 
-**Last Updated:** 2026-01-27
+**Last Updated:** 2026-01-28
 **Project:** house.dev - Developer disk space cleanup tool
 
 ---
@@ -19,8 +19,10 @@ house.dev is a minimal desktop app helping developers reclaim disk space by iden
 /docs/ux/
 ├── README.md                          # This file - index and navigation
 ├── personas.md                        # Developer persona (living document)
-└── user-stories/
-    └── mvp-stories.md                 # MVP user stories with acceptance criteria
+├── user-stories/
+│   └── mvp-stories.md                 # MVP user stories with acceptance criteria
+└── proposals/
+    └── consolidated-path-bar-proposal.md  # Path bar redesign (2026-01-28)
 ```
 
 ---
@@ -60,6 +62,25 @@ These documents are continuously updated as we learn more about users:
 - Priority level (P0 = MVP critical)
 - JTBD alignment
 - Technical implementation notes
+
+---
+
+## Design Proposals
+
+### [proposals/consolidated-path-bar-proposal.md](./proposals/consolidated-path-bar-proposal.md)
+**Date:** 2026-01-28
+**Feature:** Unified path display + folder selection + scan action
+
+**Problem:** Current UI has 3 separate elements (header buttons, path display, stats) creating visual fragmentation.
+
+**Goal:** Consolidate path display, folder selection, and scanning into a single cohesive "command bar" area that feels alive and minimal.
+
+**3 Proposed Options:**
+1. **Terminal Prompt Bar** (Recommended) - `$ ~/projects [select] [scan]` - Pure developer aesthetic
+2. **File Explorer Bar** - Finder-inspired with folder icon and breadcrumbs
+3. **Command Center Bar** - Action-first with large clickable regions
+
+**Recommendation:** Option 1 (Terminal Prompt) for best persona fit - minimal, fast, terminal vibes with playful micro-animations (blinking cursor, inline progress).
 
 ---
 

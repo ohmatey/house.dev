@@ -195,6 +195,9 @@ async function safeScan(): Promise<void> {
     folders = [];
 
     if (err instanceof Error && err.message === "Scan timed out") {
+      // Cancel backend scan if timeout triggered
+      await invoke("cancel_scan").catch(() => {});
+
       showRecoveryBanner = true;
       const reset = await showWarningDialog(
         "Scan Timed Out",
@@ -344,6 +347,16 @@ function getSizeClass(bytes: number): string {
   return "";
 }
 
+function formatPath(path: string | null): string {
+  if (!path) return "~";
+  // Replace home directory with ~
+  const home = path.match(/^\/Users\/[^/]+/)?.[0];
+  if (home) {
+    return path.replace(home, "~");
+  }
+  return path;
+}
+
 function render() {
   const app = document.getElementById("app");
   if (!app) return;
@@ -365,20 +378,35 @@ function render() {
     }
     <header class="header">
       <h1>house.dev</h1>
-      <div class="header-actions">
-        <button class="btn btn-secondary" id="select-folder">
-          📁 Select Folder
-        </button>
-        <button class="btn btn-primary" id="refresh" ${!currentPath || isScanning ? "disabled" : ""}>
-          ↻ Scan
-        </button>
-      </div>
     </header>
 
-    <div class="path-display">
-      <span class="path ${!currentPath ? "empty" : ""}">
-        ${currentPath || "No folder selected"}
-      </span>
+    <div class="path-bar">
+      <span class="prompt-symbol ${isScanning ? "scanning" : ""}">$</span>
+      ${
+        isScanning
+          ? `
+        <div class="scan-progress">
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: 100%"></div>
+          </div>
+          <span class="progress-text">scanning...</span>
+        </div>
+        <div class="path-actions">
+          <button class="path-btn" id="cancel-scan">cancel</button>
+        </div>
+      `
+          : `
+        <div class="path-content" id="path-content" title="${currentPath || "Click to select folder"}">
+          <span class="path-text ${!currentPath ? "empty" : ""}">${formatPath(currentPath) || "~"}</span>
+          <span class="path-cursor"></span>
+        </div>
+        <div class="path-actions">
+          <button class="path-btn" id="select-folder">select</button>
+          <span class="action-separator">│</span>
+          <button class="path-btn" id="refresh" ${!currentPath ? "disabled" : ""}>scan ↻</button>
+        </div>
+      `
+      }
     </div>
 
     ${
@@ -404,15 +432,13 @@ function render() {
           ? `
         <div class="loading">
           <div class="spinner"></div>
-          <span class="loading-text">Scanning folders...</span>
-          <button class="btn btn-secondary btn-cancel" id="cancel-scan">Cancel</button>
         </div>
       `
           : !currentPath
             ? `
         <div class="empty-state">
           <div class="empty-state-icon">📂</div>
-          <div class="empty-state-text">Select a projects folder to start</div>
+          <div class="empty-state-text">click the path above to select a folder</div>
         </div>
       `
             : folders.length === 0
@@ -462,6 +488,7 @@ function render() {
 
   // Event listeners
   document.getElementById("select-folder")?.addEventListener("click", selectFolder);
+  document.getElementById("path-content")?.addEventListener("click", selectFolder);
   document.getElementById("refresh")?.addEventListener("click", safeScan);
   document.getElementById("clear-path")?.addEventListener("click", clearSavedPath);
   document.getElementById("cancel-scan")?.addEventListener("click", cancelScan);
